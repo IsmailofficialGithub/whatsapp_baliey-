@@ -159,6 +159,65 @@ export async function initWhatsApp() {
     // Save credentials when updated
     sock.ev.on('creds.update', saveCreds);
 
+    // Handle incoming messages
+    sock.ev.on('messages.upsert', async (m) => {
+      const { messages, type } = m;
+      if (type !== 'notify') return;
+
+      for (const msg of messages) {
+        try {
+          // Skip if no message content or if it's from us
+          if (!msg.message || msg.key.fromMe) continue;
+
+          const senderNumber = msg.key.remoteJid;
+          const messageContent = 
+            msg.message.conversation || 
+            msg.message.extendedTextMessage?.text || 
+            msg.message.imageMessage?.caption || 
+            '';
+
+          console.log(`\n📩 New message from ${senderNumber}: ${messageContent}`);
+
+          // Send to webhook if configured
+          const webhookUrl = process.env.WEBHOOK_URL;
+          if (webhookUrl) {
+            console.log(`Sending message info to webhook: ${webhookUrl}`);
+            
+            const payload = {
+              sender: senderNumber,
+              message: messageContent,
+              timestamp: msg.messageTimestamp,
+              pushName: msg.pushName,
+              messageId: msg.key.id,
+              fullData: msg // Include full message data for more info
+            };
+
+            fetch(webhookUrl, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify(payload),
+            })
+            .then(response => {
+              if (!response.ok) {
+                console.error(`Webhook error: ${response.status} ${response.statusText}`);
+              } else {
+                console.log('Successfully sent to webhook');
+              }
+            })
+            .catch(error => {
+              console.error('Error calling webhook:', error.message);
+            });
+          } else {
+            console.log('No WEBHOOK_URL configured, skipping notification.');
+          }
+        } catch (error) {
+          console.error('Error processing incoming message:', error);
+        }
+      }
+    });
+
     // Handle connection errors
     sock.ev.on('connection.update', (update) => {
       if (update.connection === 'connecting') {
