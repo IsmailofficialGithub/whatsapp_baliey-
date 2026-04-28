@@ -1,116 +1,92 @@
-# WhatsApp Baileys Backend Service
+# WhatsApp Baileys Service
 
-A standalone Node.js service for sending WhatsApp messages using Baileys. This service runs independently and exposes REST API endpoints for the expense management app.
+A powerful, standalone Node.js service for WhatsApp integration using Baileys. Features a premium web interface for QR code authentication and a robust REST API for automated messaging.
 
-## Features
+## 🚀 Features
 
-- WhatsApp Web connection using Baileys
-- REST API for sending messages
-- Session persistence (auth state saved)
-- CORS enabled for all origins
-- Health check endpoint
+- **Premium Web Interface**: Interactive `/qr` page for easy authentication.
+- **REST API**: Simple endpoints for sending messages and checking status.
+- **Webhook Support**: Receive incoming WhatsApp messages in your own backend.
+- **Session Persistence**: Auth state is saved locally to maintain connection across restarts.
+- **Auto-Formatting**: Smart phone number parsing for global compatibility.
+- **Lightweight & Fast**: Built with Express and Baileys.
 
-## Setup
+## 🛠️ Setup
 
-1. Install dependencies:
-```bash
-npm install
-```
+1. **Install dependencies**:
+   ```bash
+   npm install
+   ```
 
-2. Copy `.env.example` to `.env` and configure:
-```bash
-cp .env.example .env
-```
+2. **Configure environment**:
+   Create a `.env` file in the root directory:
+   ```env
+   PORT=3001
+   WEBHOOK_URL=https://your-api.com/webhook
+   WHATSAPP_SESSION_PATH=./sessions
+   ```
 
-3. Start the service:
-```bash
-npm start
-```
+3. **Start the service**:
+   ```bash
+   npm start
+   ```
+   For development:
+   ```bash
+   npm run dev
+   ```
 
-For development with auto-reload:
-```bash
-npm run dev
-```
+## 📱 Web Interface
 
-## Initial WhatsApp Connection
+To link your WhatsApp account, simply navigate to:
+`http://localhost:3001/qr`
 
-1. Start the server
-2. Check the console for a QR code
-3. Open WhatsApp on your phone
-4. Go to Settings → Linked Devices → Link a Device
-5. Scan the QR code displayed in the console
-6. The session will be saved and persist across restarts
+This premium interface provides:
+- Real-time QR code generation.
+- Connection status updates (Waiting, Generating, Connected).
+- Visual feedback once the device is successfully linked.
 
-## API Endpoints
+## 📡 API Endpoints
 
-### POST /api/send-message
+### `POST /api/send-message`
+Send a WhatsApp message.
+- **Body**: `{ "phone": "+1234567890", "message": "Hello World" }`
+- **Notes**: Supports various phone formats; will auto-format to E.164.
 
-Send a WhatsApp message to a phone number.
+### `GET /api/status`
+Returns the current connection state.
+- **Response**: 
+  ```json
+  {
+    "success": true,
+    "data": {
+      "connected": true,
+      "connecting": false,
+      "qr": null
+    }
+  }
+  ```
 
-**Request Body:**
+### `GET /api/health`
+Quick health check for monitoring tools.
+
+## 🔗 Webhook Integration
+
+Configure `WEBHOOK_URL` in your `.env` to receive incoming messages. The service will POST a JSON payload:
+
 ```json
 {
-  "phone": "+1234567890",
-  "message": "Your message text here"
+  "sender": "1234567890@s.whatsapp.net",
+  "message": "Hello from WhatsApp!",
+  "timestamp": 1625000000,
+  "pushName": "John Doe",
+  "messageId": "ABC123XYZ"
 }
 ```
 
-**Response:**
-```json
-{
-  "success": true,
-  "message": "Message sent successfully"
-}
-```
+## 🔒 Security & Persistence
 
-### GET /health
+- **Sessions**: Stored in `./sessions/` by default. Protect this directory as it contains your login credentials.
+- **CORS**: Enabled for all origins by default (recommended to restrict in production).
 
-Health check endpoint.
-
-**Response:**
-```json
-{
-  "status": "ok",
-  "whatsapp_connected": true
-}
-```
-
-## Phone Number Format
-
-Phone numbers should be in E.164 format (e.g., `+1234567890`) with country code. The service will attempt to format numbers automatically if needed.
-
-## Deployment
-
-This service can be deployed on any Node.js hosting platform:
-
-- **Vercel**: Use serverless functions
-- **Railway**: Direct Node.js deployment
-- **Heroku**: Standard Node.js buildpack
-- **DigitalOcean**: App Platform or Droplet
-- **AWS**: EC2 or Lambda (with modifications)
-
-### Environment Variables
-
-- `PORT`: Server port (default: 3001)
-- `WHATSAPP_SESSION_PATH`: Path to store WhatsApp session files (default: ./sessions)
-- `LOG_LEVEL`: Logging level (default: info)
-
-### Session Persistence
-
-The WhatsApp session is stored in the `sessions/` directory. Make sure this directory is:
-- Included in your deployment
-- Has write permissions
-- Is backed up (session loss requires re-authentication)
-
-## Error Handling
-
-- All errors are logged to console
-- API returns appropriate HTTP status codes
-- WhatsApp connection errors are handled gracefully
-
-## Security Notes
-
-- This service allows CORS from all origins (configure for production)
-- Consider adding authentication/API keys for production use
-- Session files contain sensitive authentication data - keep secure
-"# whatsapp_baliey-" 
+## 📄 License
+ISC

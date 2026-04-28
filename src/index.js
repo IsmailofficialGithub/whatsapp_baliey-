@@ -1,6 +1,8 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { initWhatsApp } from './whatsapp.js';
 import routes from './routes.js';
 
@@ -9,6 +11,9 @@ dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // Middleware
 app.use(cors({
@@ -28,6 +33,11 @@ app.use((req, res, next) => {
 
 // Routes
 app.use('/api', routes);
+
+// QR Code page
+app.get('/qr', (req, res) => {
+  res.sendFile(path.join(__dirname, 'qr.html'));
+});
 
 // Root endpoint
 app.get('/', (req, res) => {
