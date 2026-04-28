@@ -66,6 +66,10 @@ Returns the current connection state.
   }
   ```
 
+### `POST /api/logout`
+Disconnects the current WhatsApp account and clears session files.
+- **Notes**: Useful for switching accounts or resetting the connection.
+
 ### `GET /api/health`
 Quick health check for monitoring tools.
 

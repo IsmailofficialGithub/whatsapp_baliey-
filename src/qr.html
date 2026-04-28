@@ -177,6 +177,30 @@
             font-size: 48px;
             margin-bottom: 16px;
         }
+        .btn-logout {
+            margin-top: 24px;
+            background: rgba(239, 68, 68, 0.1);
+            color: #ef4444;
+            border: 1px solid rgba(239, 68, 68, 0.2);
+            padding: 10px 20px;
+            border-radius: 12px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            width: 100%;
+        }
+
+        .btn-logout:hover {
+            background: #ef4444;
+            color: white;
+            box-shadow: 0 4px 12px rgba(239, 68, 68, 0.3);
+        }
+
+        .btn-logout:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
     </style>
 </head>
 <body>
@@ -196,7 +220,9 @@
             </div>
             <div id="success" style="display: none; padding: 20px;">
                 <div class="success-icon">✓</div>
-                <h2 style="color: var(--primary)">Connected!</h2>
+                <h2 style="color: var(--primary); margin-bottom: 8px;">Connected!</h2>
+                <p style="margin-bottom: 16px; font-size: 14px;">Your WhatsApp is linked and ready.</p>
+                <button id="logout-btn" class="btn-logout" onclick="logout()">Disconnect Account</button>
             </div>
         </div>
 
@@ -287,6 +313,36 @@
             statusBadge.className = "status-badge status-connected";
             statusText.innerText = "Connected";
             subTitle.innerText = "Your WhatsApp is linked and ready to use";
+        }
+
+        async function logout() {
+            if (!confirm("Are you sure you want to disconnect this WhatsApp account?")) return;
+            
+            try {
+                const logoutBtn = document.getElementById("logout-btn");
+                logoutBtn.disabled = true;
+                logoutBtn.innerText = "Disconnecting...";
+                
+                const response = await fetch('/api/logout', { method: 'POST' });
+                const result = await response.json();
+                
+                if (result.success) {
+                    isConnected = false;
+                    successElement.style.display = "none";
+                    qrcodeElement.style.display = "block";
+                    loadingElement.style.display = "flex";
+                    statusBadge.className = "status-badge status-waiting";
+                    statusText.innerText = "Disconnecting...";
+                    subTitle.innerText = "Scan the QR code to connect your account";
+                    currentQR = null;
+                }
+            } catch (error) {
+                console.error("Logout failed:", error);
+                alert("Failed to disconnect. Please try again.");
+                const logoutBtn = document.getElementById("logout-btn");
+                logoutBtn.disabled = false;
+                logoutBtn.innerText = "Disconnect Account";
+            }
         }
 
         // Check status every 3 seconds

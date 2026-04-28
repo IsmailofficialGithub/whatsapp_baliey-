@@ -294,3 +294,41 @@ export async function sendMessage(phone, message) {
     throw error;
   }
 }
+/**
+ * Disconnect WhatsApp and clear session
+ */
+export async function disconnectWhatsApp() {
+  try {
+    if (sock) {
+      try {
+        await sock.logout();
+      } catch (err) {
+        console.log('Error during socket logout (maybe already disconnected):', err.message);
+      }
+      sock.ev.removeAllListeners();
+      sock = null;
+    }
+    
+    connectionStatus.connected = false;
+    connectionStatus.connecting = false;
+    connectionStatus.qr = null;
+    isConnecting = false;
+    
+    clearSession();
+    
+    // Restart initialization after a short delay to generate new QR
+    setTimeout(() => {
+      initWhatsApp();
+    }, 2000);
+    
+    return { success: true };
+  } catch (error) {
+    console.error('Error in disconnectWhatsApp:', error);
+    // Ensure state is reset even on error
+    sock = null;
+    connectionStatus.connected = false;
+    isConnecting = false;
+    clearSession();
+    throw error;
+  }
+}

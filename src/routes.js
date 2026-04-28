@@ -1,5 +1,5 @@
 import express from 'express';
-import { sendMessage, getConnectionStatus } from './whatsapp.js';
+import { sendMessage, getConnectionStatus, disconnectWhatsApp } from './whatsapp.js';
 
 const router = express.Router();
 
@@ -76,6 +76,23 @@ router.get('/status', (req, res) => {
     success: true,
     data: status,
   });
+/**
+ * Logout/Disconnect WhatsApp endpoint
+ */
+router.post('/logout', async (req, res) => {
+  try {
+    await disconnectWhatsApp();
+    res.json({
+      success: true,
+      message: 'Logged out successfully',
+    });
+  } catch (error) {
+    console.error('Error in logout endpoint:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to logout',
+    });
+  }
 });
 
 export default router;
