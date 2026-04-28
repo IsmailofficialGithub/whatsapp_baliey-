@@ -76,6 +76,8 @@ router.get('/status', (req, res) => {
     success: true,
     data: status,
   });
+});
+
 /**
  * Logout/Disconnect WhatsApp endpoint
  */
