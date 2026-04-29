@@ -5,6 +5,9 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { initWhatsApp } from './whatsapp.js';
 import routes from './routes.js';
+import v1Routes from './v1.routes.js';
+import './lib/supabase.js';
+import { supabaseAdmin } from './lib/supabase.js';
 
 // Load environment variables
 dotenv.config();
@@ -16,10 +19,30 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Middleware
+const allowedOrigins = process.env.ALLOWED_ORIGINS
+  ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim())
+  : ['http://localhost:5173', 'http://localhost:3000'];
+
 app.use(cors({
-  origin: '*', // Allow all origins
-  methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
+  origin: (origin, callback) => {
+    // Allow requests with no origin (like mobile apps or curl)
+    if (!origin) return callback(null, true);
+
+    const isAllowed = allowedOrigins.includes(origin) ||
+      allowedOrigins.includes('*') ||
+      origin.startsWith('http://localhost:');
+
+    if (isAllowed) {
+      callback(null, true);
+    } else {
+      console.log('CORS Blocked Origin:', origin);
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key'],
+  credentials: true,
+  optionsSuccessStatus: 200
 }));
 
 app.use(express.json());
@@ -33,6 +56,7 @@ app.use((req, res, next) => {
 
 // Routes
 app.use('/api', routes);
+app.use('/v1', v1Routes);
 
 // QR Code page
 app.get('/qr', (req, res) => {
@@ -73,16 +97,32 @@ app.use((req, res) => {
 // Start server
 async function startServer() {
   try {
-    // Initialize WhatsApp connection
-    console.log('Initializing WhatsApp connection...');
-    await initWhatsApp();
-
     // Start Express server
-    app.listen(PORT, () => {
-      console.log(`\n🚀 WhatsApp Service running on port ${PORT}`);
-      console.log(`📱 Health check: http://localhost:${PORT}/api/health`);
-      console.log(`📨 Send message: POST http://localhost:${PORT}/api/send-message\n`);
+    const server = app.listen(PORT, () => {
+      console.log(`\n🚀 WhatsApp SaaS Service running on port ${PORT}`);
+      console.log(`📱 Public API: http://localhost:${PORT}/v1/send/:appId`);
     });
+
+    // Auto-reconnect previously connected apps
+    console.log('Checking for active WhatsApp sessions to reconnect...');
+    const { data: apps, error } = await supabaseAdmin
+      .from('applications')
+      .select('id')
+      .eq('status', 'connected');
+
+    if (error) {
+      console.error('Failed to fetch active sessions:', error);
+    } else if (apps && apps.length > 0) {
+      console.log(`Found ${apps.length} active sessions. Reconnecting...`);
+      for (const app of apps) {
+        initWhatsApp(app.id).catch(err =>
+          console.error(`Failed to reconnect app ${app.id}:`, err.message)
+        );
+      }
+    } else {
+      console.log('No active sessions to reconnect.');
+    }
+
   } catch (error) {
     console.error('Failed to start server:', error);
     process.exit(1);

@@ -1,334 +1,158 @@
 import makeWASocket, {
   DisconnectReason,
-  useMultiFileAuthState,
   fetchLatestBaileysVersion,
+  useMultiFileAuthState,
 } from '@whiskeysockets/baileys';
 import pino from 'pino';
-import qrcode from 'qrcode-terminal';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
-import { existsSync, mkdirSync, rmSync } from 'fs';
+import { supabaseAdmin } from './lib/supabase.js';
+import { DatabaseService } from './services/database.service.js';
+import fs from 'fs';
+import path from 'path';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
+const instances = new Map();
+const SESSIONS_DIR = path.resolve('./sessions');
 
-let sock = null;
-let isConnecting = false;
-let connectionStatus = {
-  connected: false,
-  connecting: false,
-  qr: null,
-};
+if (!fs.existsSync(SESSIONS_DIR)) fs.mkdirSync(SESSIONS_DIR, { recursive: true });
 
 /**
- * Format phone number to WhatsApp format (E.164)
- * @param {string} phone - Phone number in any format
- * @returns {string} - Formatted phone number
+ * Total Session Cleanup
  */
-export function formatPhoneNumber(phone) {
-  if (!phone) return null;
-  
-  // Remove all non-digit characters except +
-  let cleaned = phone.replace(/[^\d+]/g, '');
-  
-  // If it doesn't start with +, assume it needs country code
-  // Default to +1 (US) if no country code detected
-  if (!cleaned.startsWith('+')) {
-    // Try to detect if it already has country code (starts with 1 for US)
-    if (cleaned.length === 11 && cleaned.startsWith('1')) {
-      cleaned = '+' + cleaned;
-    } else if (cleaned.length === 10) {
-      // Assume US number, add +1
-      cleaned = '+1' + cleaned;
-    } else {
-      // Try to add + if it looks like it might have country code
-      cleaned = '+' + cleaned;
-    }
+async function clearSession(applicationId) {
+  console.log(`[${applicationId}] 🧹 Performing deep cleanup...`);
+  // 1. Clear local
+  const sessionPath = path.join(SESSIONS_DIR, applicationId);
+  if (fs.existsSync(sessionPath)) {
+    fs.rmSync(sessionPath, { recursive: true, force: true });
   }
-  
-  return cleaned;
+  // 2. Clear Supabase
+  await supabaseAdmin.from('sessions').delete().eq('application_id', applicationId);
+  // 3. Clear Instance
+  instances.delete(applicationId);
 }
 
-/**
- * Clear invalid session files (for 401 errors)
- */
-function clearSession() {
+async function syncSessionToSupabase(applicationId) {
   try {
-    const sessionPath = process.env.WHATSAPP_SESSION_PATH || join(__dirname, '../sessions');
-    if (existsSync(sessionPath)) {
-      console.log('Clearing invalid session files...');
-      rmSync(sessionPath, { recursive: true, force: true });
-      console.log('Session files cleared. Please scan QR code again.');
+    const sessionPath = path.join(SESSIONS_DIR, applicationId);
+    if (!fs.existsSync(sessionPath)) return;
+
+    const files = fs.readdirSync(sessionPath);
+    for (const file of files) {
+      const filePath = path.join(sessionPath, file);
+      if (!fs.existsSync(filePath)) continue;
+
+      const data = fs.readFileSync(filePath, 'utf-8');
+      await supabaseAdmin.from('sessions').upsert({
+        application_id: applicationId,
+        key: file,
+        data: JSON.parse(data)
+      }, { onConflict: 'application_id, key' });
     }
-  } catch (error) {
-    console.error('Error clearing session:', error);
+  } catch (err) {
+    console.error(`[${applicationId}] Sync Error:`, err.message);
   }
 }
 
-/**
- * Initialize WhatsApp connection
- */
-export async function initWhatsApp() {
-  if (isConnecting) {
-    console.log('WhatsApp connection already in progress...');
-    return;
-  }
+async function restoreSessionFromSupabase(applicationId) {
+  const sessionPath = path.join(SESSIONS_DIR, applicationId);
+  if (!fs.existsSync(sessionPath)) fs.mkdirSync(sessionPath, { recursive: true });
 
-  if (sock && connectionStatus.connected) {
-    console.log('WhatsApp already connected');
-    return sock;
+  const { data: rows } = await supabaseAdmin.from('sessions').select('key, data').eq('application_id', applicationId);
+  if (rows && rows.length > 0) {
+    for (const row of rows) {
+      fs.writeFileSync(path.join(sessionPath, row.key), JSON.stringify(row.data));
+    }
+    return true;
   }
+  return false;
+}
 
-  isConnecting = true;
-  connectionStatus.connecting = true;
+export async function initWhatsApp(applicationId) {
+  if (instances.has(applicationId)) return instances.get(applicationId).sock;
 
   try {
-    // Get session path from environment or use default
-    const sessionPath = process.env.WHATSAPP_SESSION_PATH || join(__dirname, '../sessions');
-    
-    // Create sessions directory if it doesn't exist
-    if (!existsSync(sessionPath)) {
-      mkdirSync(sessionPath, { recursive: true });
-    }
+    // Attempt restoration
+    const hasSession = await restoreSessionFromSupabase(applicationId);
 
-    const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
+    const { state, saveCreds } = await useMultiFileAuthState(path.join(SESSIONS_DIR, applicationId));
     const { version } = await fetchLatestBaileysVersion();
 
-    sock = makeWASocket({
+    const sock = makeWASocket({
       auth: state,
       logger: pino({ level: 'silent' }),
       version,
-      generateHighQualityLinkPreview: true,
+      printQRInTerminal: false,
+      browser: ['WA SaaS', 'Chrome', '1.0.0'],
+      connectTimeoutMs: 60000,
     });
 
-    // Handle QR code
-    sock.ev.on('connection.update', (update) => {
+    const instance = { sock, applicationId, status: { connected: false, connecting: true, qr: null } };
+    instances.set(applicationId, instance);
+
+    sock.ev.on('connection.update', async (update) => {
       const { connection, lastDisconnect, qr } = update;
 
       if (qr) {
-        connectionStatus.qr = qr;
-        console.log('\n=== WhatsApp QR Code ===');
-        qrcode.generate(qr, { small: true });
-        console.log('Scan this QR code with WhatsApp to connect\n');
+        instance.status.qr = qr;
+        console.log(`[${applicationId}] 🎯 QR Generated Successfully`);
+      }
+
+      if (connection === 'open') {
+        console.log(`[${applicationId}] ✅ CONNECTED!`);
+        instance.status.connected = true;
+        instance.status.connecting = false;
+        instance.status.qr = null;
+        await syncSessionToSupabase(applicationId);
+        await supabaseAdmin.from('applications').update({ status: 'connected', phone_number: sock.user.id.split(':')[0] }).eq('id', applicationId);
       }
 
       if (connection === 'close') {
-        const error = lastDisconnect?.error;
-        const statusCode = error?.output?.statusCode;
+        const statusCode = (lastDisconnect?.error)?.output?.statusCode;
         const isLoggedOut = statusCode === DisconnectReason.loggedOut;
-        const isUnauthorized = statusCode === 401;
 
-        console.log(
-          'Connection closed due to ',
-          lastDisconnect?.error,
-          ', reconnecting ',
-          !isLoggedOut
-        );
+        instance.status.connected = false;
+        instance.status.connecting = false;
+        await supabaseAdmin.from('applications').update({ status: 'disconnected' }).eq('id', applicationId);
 
-        connectionStatus.connected = false;
-        connectionStatus.connecting = false;
-        isConnecting = false;
-        sock = null;
-
-        // If unauthorized (401), clear session and reconnect
-        if (isUnauthorized) {
-          console.log('⚠️  Session expired or invalid. Clearing session files...');
-          clearSession();
-          // Reconnect after clearing session (will show QR code)
-          setTimeout(() => {
-            console.log('Reconnecting with new session...');
-            initWhatsApp();
-          }, 2000);
-        } else if (!isLoggedOut) {
-          // Reconnect for other errors (but not if logged out)
-          setTimeout(() => {
-            initWhatsApp();
-          }, 5000);
+        if (!isLoggedOut) {
+          console.log(`[${applicationId}] ❌ Disconnected. Retrying...`);
+          setTimeout(() => initWhatsApp(applicationId), 5000);
         } else {
-          console.log('Session logged out. Please restart the service to reconnect.');
-        }
-      } else if (connection === 'open') {
-        console.log('WhatsApp connected successfully!');
-        connectionStatus.connected = true;
-        connectionStatus.connecting = false;
-        isConnecting = false;
-        connectionStatus.qr = null;
-      }
-    });
-
-    // Save credentials when updated
-    sock.ev.on('creds.update', saveCreds);
-
-    // Handle incoming messages
-    sock.ev.on('messages.upsert', async (m) => {
-      const { messages, type } = m;
-      if (type !== 'notify') return;
-
-      for (const msg of messages) {
-        try {
-          // Skip if no message content or if it's from us
-          if (!msg.message || msg.key.fromMe) continue;
-
-          const senderNumber = msg.key.remoteJid;
-          const messageContent = 
-            msg.message.conversation || 
-            msg.message.extendedTextMessage?.text || 
-            msg.message.imageMessage?.caption || 
-            '';
-
-          console.log(`\n📩 New message from ${senderNumber}: ${messageContent}`);
-
-          // Send to webhook if configured
-          const webhookUrl = process.env.WEBHOOK_URL;
-          if (webhookUrl) {
-            console.log(`Sending message info to webhook: ${webhookUrl}`);
-            
-            const payload = {
-              sender: senderNumber,
-              message: messageContent,
-              timestamp: msg.messageTimestamp,
-              pushName: msg.pushName,
-              messageId: msg.key.id,
-              fullData: msg // Include full message data for more info
-            };
-
-            fetch(webhookUrl, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-              },
-              body: JSON.stringify(payload),
-            })
-            .then(response => {
-              if (!response.ok) {
-                console.error(`Webhook error: ${response.status} ${response.statusText}`);
-              } else {
-                console.log('Successfully sent to webhook');
-              }
-            })
-            .catch(error => {
-              console.error('Error calling webhook:', error.message);
-            });
-          } else {
-            console.log('No WEBHOOK_URL configured, skipping notification.');
-          }
-        } catch (error) {
-          console.error('Error processing incoming message:', error);
+          console.log(`[${applicationId}] 🚪 Logged out or Session Corrupted. Cleaning up.`);
+          await clearSession(applicationId);
         }
       }
     });
 
-    // Handle connection errors
-    sock.ev.on('connection.update', (update) => {
-      if (update.connection === 'connecting') {
-        connectionStatus.connecting = true;
-      }
+    sock.ev.on('creds.update', async () => {
+      await saveCreds();
+      syncSessionToSupabase(applicationId);
     });
 
     return sock;
   } catch (error) {
-    console.error('Error initializing WhatsApp:', error);
-    connectionStatus.connected = false;
-    connectionStatus.connecting = false;
-    isConnecting = false;
+    console.error(`[${applicationId}] ❌ Boot Error:`, error);
+    await clearSession(applicationId);
     throw error;
   }
 }
 
-/**
- * Get WhatsApp socket instance
- */
-export function getSocket() {
-  return sock;
-}
-
-/**
- * Get connection status
- */
-export function getConnectionStatus() {
-  return {
-    ...connectionStatus,
-    hasSocket: !!sock,
-  };
-}
-
-/**
- * Send WhatsApp message
- * @param {string} phone - Phone number (will be formatted)
- * @param {string} message - Message text
- * @returns {Promise<object>} - Send result
- */
-export async function sendMessage(phone, message) {
-  if (!sock || !connectionStatus.connected) {
-    throw new Error('WhatsApp not connected. Please wait for connection.');
-  }
-
-  if (!phone || !message) {
-    throw new Error('Phone number and message are required');
-  }
-
-  try {
-    const formattedPhone = formatPhoneNumber(phone);
-    if (!formattedPhone) {
-      throw new Error('Invalid phone number format');
-    }
-
-    // Remove + and @s.whatsapp.net if present, then add @s.whatsapp.net
-    const jid = formattedPhone.replace('+', '').replace('@s.whatsapp.net', '') + '@s.whatsapp.net';
-
-    console.log(`Sending message to ${formattedPhone} (${jid})`);
-
-    const result = await sock.sendMessage(jid, {
-      text: message,
-    });
-
-    console.log('Message sent successfully:', result.key.id);
-
-    return {
-      success: true,
-      messageId: result.key.id,
-      phone: formattedPhone,
-    };
-  } catch (error) {
-    console.error('Error sending WhatsApp message:', error);
-    throw error;
+export async function disconnectWhatsApp(applicationId) {
+  const instance = instances.get(applicationId);
+  if (instance) {
+    await clearSession(applicationId);
   }
 }
-/**
- * Disconnect WhatsApp and clear session
- */
-export async function disconnectWhatsApp() {
-  try {
-    if (sock) {
-      try {
-        await sock.logout();
-      } catch (err) {
-        console.log('Error during socket logout (maybe already disconnected):', err.message);
-      }
-      sock.ev.removeAllListeners();
-      sock = null;
-    }
-    
-    connectionStatus.connected = false;
-    connectionStatus.connecting = false;
-    connectionStatus.qr = null;
-    isConnecting = false;
-    
-    clearSession();
-    
-    // Restart initialization after a short delay to generate new QR
-    setTimeout(() => {
-      initWhatsApp();
-    }, 2000);
-    
-    return { success: true };
-  } catch (error) {
-    console.error('Error in disconnectWhatsApp:', error);
-    // Ensure state is reset even on error
-    sock = null;
-    connectionStatus.connected = false;
-    isConnecting = false;
-    clearSession();
-    throw error;
-  }
+
+export function getConnectionStatus(applicationId) {
+  const inst = instances.get(applicationId);
+  return inst ? inst.status : { connected: false, connecting: false, qr: null };
+}
+
+export function getInstance(applicationId) { return instances.get(applicationId); }
+
+export async function sendMessage(applicationId, phone, message) {
+  const instance = instances.get(applicationId);
+  if (!instance || !instance.status.connected) throw new Error('Not connected');
+  const jid = phone.replace(/[^\d]/g, '') + '@s.whatsapp.net';
+  return await instance.sock.sendMessage(jid, { text: message });
 }
